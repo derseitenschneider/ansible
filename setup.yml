@@ -1,0 +1,104 @@
+---
+- name: Set up complete macOS development environment
+  hosts: localhost
+  vars:
+    dotfiles_repo: "git@github.com:derseitenschneider/dotfiles.git"
+    homebrew_prefix: "{{ (ansible_facts['os_family'] == 'Darwin' and '/opt/homebrew') or '/home/linuxbrew/.linuxbrew' }}"
+    repository_structure:
+      - path: "~/Repositories/personal"
+        repos: [] # Add personal repos you want to clone automatically
+      - path: "~/Repositories/work"
+        repos: [] # Add work repos you want to clone automatically
+
+  tasks:
+    - name: Check if Homebrew is installed
+      stat:
+        path: "{{ homebrew_prefix }}/bin/brew"
+      register: homebrew_check
+
+    - name: Install Homebrew if not present
+      shell: /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+      when: not homebrew_check.stat.exists
+
+    - name: Create repository directories
+      file:
+        path: "{{ item.path }}"
+        state: directory
+        mode: "0755"
+      loop: "{{ repository_structure }}"
+
+    - name: Check if dotfiles directory exists
+      stat:
+        path: "~/.dotfiles"
+      register: dotfiles_check
+
+    - name: Clone dotfiles repository if not present
+      git:
+        repo: "{{ dotfiles_repo }}"
+        dest: "~/.dotfiles"
+        accept_hostkey: yes
+      when: not dotfiles_check.stat.exists
+
+    - name: Install packages from Brewfile
+      command: brew bundle
+      args:
+        chdir: "~/.dotfiles"
+      register: brew_result
+      changed_when: "'Installing' in brew_result.stdout"
+
+    - name: Stow all dotfiles
+      command: stow */
+      args:
+        chdir: "~/.dotfiles"
+      register: stow_result
+      changed_when: stow_result.rc == 0
+      ignore_errors: yes # Some stow operations might fail if files already exist
+
+    # Optional: Clone specific repositories
+    - name: Clone repositories
+      git:
+        repo: "{{ item.url }}"
+        dest: "{{ item.path }}/{{ item.name }}"
+        accept_hostkey: yes
+      loop: "{{ repository_structure | map(attribute='repos') | flatten }}"
+      when: item.url is defined
+
+    # Setup SSH for GitHub (optional)
+    - name: Ensure SSH directory exists
+      file:
+        path: "~/.ssh"
+        state: directory
+        mode: "0700"
+
+    - name: Check if GitHub SSH key exists
+      stat:
+        path: "~/.ssh/id_ed25519"
+      register: ssh_key_check
+
+    - name: Generate SSH key if not present
+      command: ssh-keygen -t ed25519 -f ~/.ssh/id_ed25519 -N ""
+      when: not ssh_key_check.stat.exists
+
+    - name: Display SSH public key
+      command: cat ~/.ssh/id_ed25519.pub
+      register: ssh_pub_key
+      when: not ssh_key_check.stat.exists
+
+    - name: Show SSH key instructions
+      debug:
+        msg:
+          - "Please add this SSH key to your GitHub account:"
+          - "{{ ssh_pub_key.stdout }}"
+      when: not ssh_key_check.stat.exists
+
+    # Additional common directories
+    - name: Create additional development directories
+      file:
+        path: "{{ item }}"
+        state: directory
+        mode: "0755"
+      loop:
+        - "~/Projects"
+        - "~/Scripts"
+        - "~/Downloads/work"
+        - "~/Downloads/personal"
